@@ -13,8 +13,8 @@ null,
 {"id":11,"expanded":true,"name":"Sala","order":14,"parentId":12,"scrollX":811,"scrollY":453},
 {"id":12,"expanded":true,"name":"Pasillo principal","order":13,"parentId":14,"scrollX":0,"scrollY":0},
 {"id":13,"expanded":true,"name":"pasillo derecho","order":15,"parentId":14,"scrollX":540.6666666666666,"scrollY":304.6666666666667},
-{"id":14,"expanded":true,"name":"Entrada","order":12,"parentId":0,"scrollX":0,"scrollY":0},
+{"id":14,"expanded":false,"name":"Entrada","order":12,"parentId":0,"scrollX":0,"scrollY":0},
 {"id":15,"expanded":false,"name":"Sala de profes","order":16,"parentId":13,"scrollX":540.6666666666666,"scrollY":319.3333333333333},
 {"id":16,"expanded":false,"name":"pasillo izquierdo","order":17,"parentId":14,"scrollX":540.6666666666666,"scrollY":304.6666666666667},
-{"id":17,"expanded":true,"name":"PRIN","order":10,"parentId":4,"scrollX":2162.6666666666665,"scrollY":1218.6666666666667}
+{"id":17,"expanded":true,"name":"PRIN","order":10,"parentId":4,"scrollX":1946.3999999999999,"scrollY":1096.8}
 ]
