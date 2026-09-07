@@ -1,0 +1,8 @@
+# RPG Maker MZ: partidas y configuración locales
+Project/save/
+
+# Archivos del sistema y del editor
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
