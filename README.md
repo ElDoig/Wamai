@@ -1,2 +1,5 @@
-# Wamai
-dsadasdasdasd
+RPG Maker proyect
+Scripts personalized
+
+
+
