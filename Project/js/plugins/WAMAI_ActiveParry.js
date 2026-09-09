@@ -1,6 +1,6 @@
 /*:
  * @target MZ
- * @plugindesc v1.0 Parry activo con aviso visual, entrada cronometrada y contraataque.
+ * @plugindesc v1.2 Parry activo con tres resultados y enfoque cinematográfico.
  * @author Equipo Wamai
  *
  * @param VentanaFrames
@@ -36,6 +36,62 @@
  * @off No
  * @default true
  *
+ * @param FinTemprano
+ * @text Fin de bloqueo temprano
+ * @desc Porcentaje de la ventana donde pulsar produce un bloqueo parcial.
+ * @type number
+ * @min 10
+ * @max 70
+ * @default 40
+ *
+ * @param FinPerfecto
+ * @text Fin de parry perfecto
+ * @desc Porcentaje donde termina la ventana perfecta y empieza el fallo.
+ * @type number
+ * @min 30
+ * @max 95
+ * @default 75
+ *
+ * @param DanoBloqueo
+ * @text Daño del bloqueo temprano
+ * @desc Porcentaje del daño normal que se recibe al bloquear temprano.
+ * @type number
+ * @min 0
+ * @max 100
+ * @default 40
+ *
+ * @param ZoomEscala
+ * @text Zoom de enfoque
+ * @desc 1.12 equivale a un acercamiento sutil del 12%.
+ * @type number
+ * @decimals 2
+ * @min 1.00
+ * @max 1.50
+ * @default 1.12
+ *
+ * @param ZoomEntradaFrames
+ * @text Entrada del zoom
+ * @type number
+ * @min 1
+ * @max 60
+ * @default 18
+ *
+ * @param ZoomSalidaFrames
+ * @text Salida del zoom
+ * @type number
+ * @min 1
+ * @max 60
+ * @default 12
+ *
+ * @param EscalaTiempo
+ * @text Velocidad de la animación
+ * @desc 0.35 reproduce las animaciones al 35% durante el enfoque.
+ * @type number
+ * @decimals 2
+ * @min 0.10
+ * @max 1.00
+ * @default 0.35
+ *
  * @param PuntoX
  * @text Posición X predeterminada
  * @desc Desplazamiento horizontal desde el centro del enemigo.
@@ -54,11 +110,15 @@
  *
  * @help
  * Antes de que un enemigo ejecute un ataque físico de daño contra un solo
- * actor, aparece un punto rojo pulsante y el aviso para pulsar Z. En RPG
- * Maker, Z corresponde a la entrada "ok"; Enter y Espacio también funcionan.
+ * actor, la cámara se acerca al enemigo, la animación se ralentiza y aparece
+ * un punto rojo pulsante con el aviso para pulsar Z. En RPG Maker, Z
+ * corresponde a la entrada "ok"; Enter y Espacio también funcionan.
  *
- * Si el jugador acierta, el daño se anula, se reproduce el sonido configurado
- * y el actor contraataca. Si falla, el ataque continúa normalmente.
+ * Hay tres resultados según el momento de la pulsación:
+ *
+ * - Temprano: bloqueo parcial; por defecto se recibe 40% del daño.
+ * - Perfecto: se anula el daño, suena el parry y el actor contraataca.
+ * - Tardío o sin pulsar: el ataque continúa con todo su daño.
  *
  * Para colocar el punto sobre el arma de un enemigo, usa en sus Notas:
  *
@@ -88,6 +148,34 @@
         Math.min(100, Number(parameters.VolumenSonido || 90))
     );
     const counterAttack = parameters.Contraatacar !== "false";
+    const earlyEnd = Math.max(
+        0.1,
+        Math.min(0.7, Number(parameters.FinTemprano || 40) / 100)
+    );
+    const perfectEnd = Math.max(
+        earlyEnd + 0.05,
+        Math.min(0.95, Number(parameters.FinPerfecto || 75) / 100)
+    );
+    const earlyDamageRate = Math.max(
+        0,
+        Math.min(1, Number(parameters.DanoBloqueo || 40) / 100)
+    );
+    const focusZoom = Math.max(
+        1,
+        Math.min(1.5, Number(parameters.ZoomEscala || 1.12))
+    );
+    const zoomInFrames = Math.max(
+        1,
+        Number(parameters.ZoomEntradaFrames || 18)
+    );
+    const zoomOutFrames = Math.max(
+        1,
+        Number(parameters.ZoomSalidaFrames || 12)
+    );
+    const animationTimeScale = Math.max(
+        0.1,
+        Math.min(1, Number(parameters.EscalaTiempo || 0.35))
+    );
     const defaultPointX = Number(parameters.PuntoX || 0);
     const defaultPointY = Number(parameters.PuntoY || -100);
     const pointPattern = /<PuntoParry\s*:\s*(-?\d+)\s*,\s*(-?\d+)\s*>/i;
@@ -99,6 +187,9 @@
         markerSprite: null,
         promptSprite: null,
         barSprite: null,
+        previousCamera: null,
+        damageModifier: null,
+        displayedTiming: "",
 
         canStart(subject, action, target) {
             if (
@@ -139,6 +230,7 @@
                 elapsed: 0
             };
             this.createVisuals(subject);
+            this.startCinematicFocus(subject);
         },
 
         update() {
@@ -149,13 +241,27 @@
             this.active.elapsed++;
             this.updateVisuals();
             if (Input.isTriggered("ok")) {
-                this.resolve(true);
+                this.resolve(this.currentTiming());
             } else if (this.active.elapsed >= windowFrames) {
-                this.resolve(false);
+                this.resolve("late");
             }
         },
 
-        resolve(success) {
+        currentTiming() {
+            if (!this.active) {
+                return "late";
+            }
+            const progress = this.active.elapsed / windowFrames;
+            if (progress < earlyEnd) {
+                return "early";
+            } else if (progress <= perfectEnd) {
+                return "perfect";
+            } else {
+                return "late";
+            }
+        },
+
+        resolve(timing) {
             if (!this.active) {
                 return;
             }
@@ -163,18 +269,25 @@
             this.result = {
                 action: this.active.action,
                 target: this.active.target,
-                success
+                timing
             };
-            if (success && parrySound) {
+            if (timing === "perfect" && parrySound) {
                 AudioManager.playSe({
                     name: parrySound,
                     volume: soundVolume,
                     pitch: 100,
                     pan: 0
                 });
+                $gameScreen.startFlash([255, 255, 255, 150], 8);
+            } else if (timing === "early") {
+                $gameScreen.startFlash([255, 190, 40, 80], 8);
+            } else {
+                SoundManager.playBuzzer();
+                $gameScreen.startFlash([255, 30, 30, 80], 8);
             }
             this.active = null;
             this.destroyVisuals();
+            this.endCinematicFocus();
         },
 
         isWaitingFor(action) {
@@ -202,6 +315,60 @@
             return match
                 ? { x: Number(match[1]), y: Number(match[2]) }
                 : { x: defaultPointX, y: defaultPointY };
+        },
+
+        withDamageModifier(action, target, rate, callback) {
+            this.damageModifier = { action, target, rate };
+            try {
+                callback();
+            } finally {
+                this.damageModifier = null;
+            }
+        },
+
+        adjustDamage(action, target, value) {
+            const modifier = this.damageModifier;
+            if (
+                modifier &&
+                modifier.action === action &&
+                modifier.target === target
+            ) {
+                return Math.round(value * modifier.rate);
+            }
+            return value;
+        },
+
+        startCinematicFocus(subject) {
+            if (!$gameScreen) {
+                return;
+            }
+
+            this.previousCamera = {
+                x: $gameScreen.zoomX(),
+                y: $gameScreen.zoomY(),
+                scale: $gameScreen.zoomScale(),
+                tone: $gameScreen.tone().slice()
+            };
+            const focusX = subject.screenX();
+            const focusY = subject.screenY() - 48;
+            $gameScreen.startZoom(focusX, focusY, focusZoom, zoomInFrames);
+            $gameScreen.startTint([-24, -24, -12, 0], zoomInFrames);
+        },
+
+        endCinematicFocus() {
+            if (!$gameScreen || !this.previousCamera) {
+                return;
+            }
+
+            const camera = this.previousCamera;
+            $gameScreen.startZoom(
+                camera.x,
+                camera.y,
+                camera.scale,
+                zoomOutFrames
+            );
+            $gameScreen.startTint(camera.tone, zoomOutFrames);
+            this.previousCamera = null;
         },
 
         createVisuals(subject) {
@@ -254,12 +421,58 @@
                 bar.y = height - 10;
                 prompt.addChild(bar);
                 this.barSprite = bar;
+                this.displayedTiming = "";
+                this.redrawPrompt("early");
             }
+        },
+
+        redrawPrompt(timing) {
+            if (!this.promptSprite) {
+                return;
+            }
+
+            const width = 420;
+            const height = 72;
+            const styles = {
+                early: {
+                    color: "#e5a323",
+                    text: "PREPÁRATE...  [Z]"
+                },
+                perfect: {
+                    color: "#ff3030",
+                    text: promptText
+                },
+                late: {
+                    color: "#8e2020",
+                    text: "¡TARDE!  [Z]"
+                }
+            };
+            const style = styles[timing];
+            const bitmap = this.promptSprite.bitmap;
+            bitmap.clear();
+            bitmap.fillRect(0, 0, width, height, "rgba(0, 0, 0, 0.78)");
+            bitmap.fillRect(0, 0, width, 3, style.color);
+            bitmap.fillRect(0, height - 3, width, 3, style.color);
+            bitmap.fontFace = $gameSystem.mainFontFace();
+            bitmap.fontSize = 30;
+            bitmap.fontBold = true;
+            bitmap.textColor = "#ffffff";
+            bitmap.outlineColor = "rgba(90, 0, 0, 1)";
+            bitmap.outlineWidth = 5;
+            bitmap.drawText(style.text, 0, 4, width, 54, "center");
+            if (this.barSprite) {
+                this.barSprite.tint = Number(`0x${style.color.slice(1)}`);
+            }
+            this.displayedTiming = timing;
         },
 
         updateVisuals() {
             const progress = this.active.elapsed / windowFrames;
             const pulse = (Math.sin(this.active.elapsed * 0.35) + 1) / 2;
+            const timing = this.currentTiming();
+            if (timing !== this.displayedTiming) {
+                this.redrawPrompt(timing);
+            }
             if (this.markerSprite) {
                 const scale = 0.82 + pulse * 0.28;
                 this.markerSprite.scale.set(scale, scale);
@@ -286,12 +499,15 @@
             this.markerSprite = null;
             this.promptSprite = null;
             this.barSprite = null;
+            this.displayedTiming = "";
         },
 
         clear() {
             this.active = null;
             this.result = null;
+            this.damageModifier = null;
             this.destroyVisuals();
+            this.endCinematicFocus();
         }
     };
 
@@ -315,7 +531,7 @@
         }
 
         this._targets.shift();
-        if (parryResult.success) {
+        if (parryResult.timing === "perfect") {
             this._logWindow.push("pushBaseLine");
             this._logWindow.push(
                 "addText",
@@ -326,9 +542,32 @@
             }
             this._subject.setLastTarget(target);
             this._logWindow.push("popBaseLine");
+        } else if (parryResult.timing === "early") {
+            this._logWindow.push("pushBaseLine");
+            this._logWindow.push(
+                "addText",
+                `${target.name()} bloquea antes de tiempo.`
+            );
+            Parry.withDamageModifier(
+                this._action,
+                target,
+                earlyDamageRate,
+                () => this.invokeAction(this._subject, target)
+            );
+            this._logWindow.push("popBaseLine");
         } else {
+            this._logWindow.push(
+                "addText",
+                `¡Tarde! ${target.name()} no logra bloquear.`
+            );
             this.invokeAction(this._subject, target);
         }
+    };
+
+    const _Game_Action_makeDamageValue = Game_Action.prototype.makeDamageValue;
+    Game_Action.prototype.makeDamageValue = function(target, critical) {
+        const value = _Game_Action_makeDamageValue.call(this, target, critical);
+        return Parry.adjustDamage(this, target, value);
     };
 
     const _BattleManager_endAction = BattleManager.endAction;
@@ -350,4 +589,49 @@
         Parry.clear();
         _Scene_Battle_terminate.call(this);
     };
+
+    const _Sprite_Animation_updateEffectGeometry =
+        Sprite_Animation.prototype.updateEffectGeometry;
+    Sprite_Animation.prototype.updateEffectGeometry = function() {
+        _Sprite_Animation_updateEffectGeometry.call(this);
+        if (Parry.active && this._handle) {
+            const normalSpeed = this._animation.speed / 100;
+            this._handle.setSpeed(normalSpeed * animationTimeScale);
+        }
+    };
+
+    const _Sprite_Animation_updateMain = Sprite_Animation.prototype.updateMain;
+    Sprite_Animation.prototype.updateMain = function() {
+        if (!Parry.active || animationTimeScale >= 1) {
+            this._wamaiParryTime = 0;
+            _Sprite_Animation_updateMain.call(this);
+            return;
+        }
+
+        this._wamaiParryTime =
+            (this._wamaiParryTime || 0) + animationTimeScale;
+        if (this._wamaiParryTime >= 1) {
+            this._wamaiParryTime -= 1;
+            _Sprite_Animation_updateMain.call(this);
+        }
+    };
+
+    if (typeof Sprite_AnimationMV !== "undefined") {
+        const _Sprite_AnimationMV_updateMain =
+            Sprite_AnimationMV.prototype.updateMain;
+        Sprite_AnimationMV.prototype.updateMain = function() {
+            if (!Parry.active || animationTimeScale >= 1) {
+                this._wamaiParryTime = 0;
+                _Sprite_AnimationMV_updateMain.call(this);
+                return;
+            }
+
+            this._wamaiParryTime =
+                (this._wamaiParryTime || 0) + animationTimeScale;
+            if (this._wamaiParryTime >= 1) {
+                this._wamaiParryTime -= 1;
+                _Sprite_AnimationMV_updateMain.call(this);
+            }
+        };
+    }
 })();
