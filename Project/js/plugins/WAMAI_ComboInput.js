@@ -1,6 +1,6 @@
 /*:
  * @target MZ
- * @plugindesc v1.0 Ejecuta una habilidad al introducir un combo durante la selección de acciones.
+ * @plugindesc v1.1 Ejecuta un combo sobre el enemigo seleccionado en Atacar.
  * @author Equipo Wamai
  *
  * @param Combo
@@ -20,9 +20,11 @@
  * @default 1500
  *
  * @help
- * El combo solo se acepta mientras la ventana de comandos del actor está
- * activa. La secuencia se reinicia al cambiar de actor, al equivocarse o al
- * superar el tiempo límite. No reemplaza los controles normales de MZ.
+ * El combo solo se acepta en la pantalla de selección de objetivo que aparece
+ * después de elegir Atacar. Las flechas cambian el objetivo; al completar la
+ * secuencia, se ataca automáticamente al enemigo resaltado sin pulsar Enter.
+ * La secuencia se reinicia al salir de esa pantalla, al equivocarse o al
+ * superar el tiempo límite.
  */
 
 (() => {
@@ -40,6 +42,18 @@
     let lastInputTime = 0;
     let currentActorId = 0;
 
+    function emitInputEvent(name, detail = {}) {
+        window.dispatchEvent(
+            new CustomEvent(name, {
+                detail: {
+                    expectedCombo,
+                    currentCombo,
+                    ...detail
+                }
+            })
+        );
+    }
+
     function resetCombo(actorId = 0) {
         currentCombo = "";
         lastInputTime = 0;
@@ -52,7 +66,12 @@
             BattleManager.isInputting() &&
             BattleManager.actor() &&
             scene._actorCommandWindow &&
-            scene._actorCommandWindow.active
+            scene._actorCommandWindow.currentSymbol() === "attack" &&
+            scene._enemyWindow &&
+            scene._enemyWindow.visible &&
+            scene._enemyWindow.active &&
+            scene._enemyWindow.enemy() &&
+            scene._enemyWindow.enemy().isAlive()
         );
     }
 
@@ -75,10 +94,31 @@
     function executeCombo(scene, actor) {
         const skill = $dataSkills[skillId];
         const action = BattleManager.inputtingAction();
-        const target = $gameTroop.aliveMembers()[0];
+        const target = scene._enemyWindow.enemy();
 
-        if (!skill || !action || !target || !actor.hasSkill(skillId) || !actor.canUse(skill)) {
+        if (!skill || !action || !target) {
             SoundManager.playBuzzer();
+            emitInputEvent("wamaiComboError", {
+                message: "No hay una acción o un objetivo disponible."
+            });
+            resetCombo(actor.actorId());
+            return;
+        }
+
+        if (!actor.hasSkill(skillId)) {
+            SoundManager.playBuzzer();
+            emitInputEvent("wamaiComboError", {
+                message: `A ${actor.name()} le falta la habilidad ${skillId}.`
+            });
+            resetCombo(actor.actorId());
+            return;
+        }
+
+        if (!actor.canUse(skill)) {
+            SoundManager.playBuzzer();
+            emitInputEvent("wamaiComboError", {
+                message: `${actor.name()} no puede usar ${skill.name}.`
+            });
             resetCombo(actor.actorId());
             return;
         }
@@ -86,7 +126,14 @@
         action.setSkill(skillId);
         action.setTarget(target.index());
         actor.setLastTarget(target);
+        emitInputEvent("wamaiComboExecuted", {
+            combo: expectedCombo,
+            skillId,
+            targetName: target.name(),
+            targetIndex: target.index()
+        });
         resetCombo(actor.actorId());
+        scene.hideSubInputWindows();
         scene.selectNextCommand();
     }
 
@@ -116,7 +163,13 @@
             event.stopImmediatePropagation();
 
             const actor = BattleManager.actor();
-            if (registerKey(key, actor.actorId(), performance.now())) {
+            const completed = registerKey(
+                key,
+                actor.actorId(),
+                performance.now()
+            );
+            emitInputEvent("wamaiComboProgress", { key, completed });
+            if (completed) {
                 executeCombo(scene, actor);
             }
         },
@@ -128,8 +181,26 @@
     Scene_Battle.prototype.startActorCommandSelection = function() {
         _Scene_Battle_startActorCommandSelection.call(this);
         const actor = BattleManager.actor();
-        if (!actor || actor.actorId() !== currentActorId) {
+        resetCombo(actor ? actor.actorId() : 0);
+        emitInputEvent("wamaiComboWaiting", {
+            actorName: actor ? actor.name() : "",
+            message: "Selecciona Atacar para elegir objetivo."
+        });
+    };
+
+    const _Scene_Battle_startEnemySelection =
+        Scene_Battle.prototype.startEnemySelection;
+    Scene_Battle.prototype.startEnemySelection = function() {
+        _Scene_Battle_startEnemySelection.call(this);
+        if (this._actorCommandWindow.currentSymbol() === "attack") {
+            const actor = BattleManager.actor();
             resetCombo(actor ? actor.actorId() : 0);
+            emitInputEvent("wamaiComboReady", {
+                actorName: actor ? actor.name() : "",
+                targetName: this._enemyWindow.enemy()
+                    ? this._enemyWindow.enemy().name()
+                    : ""
+            });
         }
     };
 
