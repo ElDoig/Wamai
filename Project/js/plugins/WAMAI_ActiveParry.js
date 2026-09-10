@@ -1,6 +1,6 @@
 /*:
  * @target MZ
- * @plugindesc v1.2 Parry activo con tres resultados y enfoque cinematográfico.
+ * @plugindesc v1.4 Parry activo con impacto, pausa táctica y cámara dinámica.
  * @author Equipo Wamai
  *
  * @param VentanaFrames
@@ -60,6 +60,14 @@
  * @max 100
  * @default 40
  *
+ * @param PTConcentracion
+ * @text PT de Concentración
+ * @desc PT que obtiene el actor al elegir R después del parry perfecto.
+ * @type number
+ * @min 0
+ * @max 100
+ * @default 20
+ *
  * @param ZoomEscala
  * @text Zoom de enfoque
  * @desc 1.12 equivale a un acercamiento sutil del 12%.
@@ -117,8 +125,17 @@
  * Hay tres resultados según el momento de la pulsación:
  *
  * - Temprano: bloqueo parcial; por defecto se recibe 40% del daño.
- * - Perfecto: se anula el daño, suena el parry y el actor contraataca.
+ * - Perfecto: se anula el daño, aparece un impacto de espadas y permite
+ *   elegir sin límite: W Represalia, E Desvío o R Concentración.
  * - Tardío o sin pulsar: el ataque continúa con todo su daño.
+ *
+ * Respuestas del parry perfecto:
+ *
+ * - W Represalia: contraataca inmediatamente al agresor.
+ * - E Desvío: redirige el golpe a otro enemigo o al propio atacante.
+ * - R Concentración: gana PT sin causar daño adicional.
+ * La cámara mantiene un movimiento sutil mientras espera la respuesta. El
+ * combate no continúa hasta que el jugador pulse W, E o R.
  *
  * Para colocar el punto sobre el arma de un enemigo, usa en sus Notas:
  *
@@ -160,6 +177,10 @@
         0,
         Math.min(1, Number(parameters.DanoBloqueo || 40) / 100)
     );
+    const concentrationTp = Math.max(
+        0,
+        Math.min(100, Number(parameters.PTConcentracion || 20))
+    );
     const focusZoom = Math.max(
         1,
         Math.min(1.5, Number(parameters.ZoomEscala || 1.12))
@@ -180,6 +201,8 @@
     const defaultPointY = Number(parameters.PuntoY || -100);
     const pointPattern = /<PuntoParry\s*:\s*(-?\d+)\s*,\s*(-?\d+)\s*>/i;
     const noParryPattern = /<SinParry\s*>/i;
+    const promptWidth = 680;
+    const promptHeight = 92;
 
     const Parry = {
         active: null,
@@ -187,9 +210,14 @@
         markerSprite: null,
         promptSprite: null,
         barSprite: null,
+        impactContainer: null,
+        impactParticles: [],
+        impactElapsed: 0,
         previousCamera: null,
+        focusCamera: null,
         damageModifier: null,
         displayedTiming: "",
+        queuedResponse: "",
 
         canStart(subject, action, target) {
             if (
@@ -227,8 +255,10 @@
                 subject,
                 action,
                 target,
-                elapsed: 0
+                elapsed: 0,
+                phase: "timing"
             };
+            this.queuedResponse = "";
             this.createVisuals(subject);
             this.startCinematicFocus(subject);
         },
@@ -240,15 +270,24 @@
 
             this.active.elapsed++;
             this.updateVisuals();
-            if (Input.isTriggered("ok")) {
-                this.resolve(this.currentTiming());
+            if (this.active.phase === "response") {
+                if (this.queuedResponse) {
+                    this.resolve("perfect", this.queuedResponse);
+                }
+            } else if (Input.isTriggered("ok")) {
+                const timing = this.currentTiming();
+                if (timing === "perfect") {
+                    this.beginResponseSelection();
+                } else {
+                    this.resolve(timing);
+                }
             } else if (this.active.elapsed >= windowFrames) {
                 this.resolve("late");
             }
         },
 
         currentTiming() {
-            if (!this.active) {
+            if (!this.active || this.active.phase !== "timing") {
                 return "late";
             }
             const progress = this.active.elapsed / windowFrames;
@@ -261,7 +300,40 @@
             }
         },
 
-        resolve(timing) {
+        beginResponseSelection() {
+            if (!this.active || this.active.phase !== "timing") {
+                return;
+            }
+
+            if (parrySound) {
+                AudioManager.playSe({
+                    name: parrySound,
+                    volume: soundVolume,
+                    pitch: 100,
+                    pan: 0
+                });
+            }
+            $gameScreen.startFlash([255, 255, 255, 180], 6);
+            this.active.phase = "response";
+            this.active.elapsed = 0;
+            this.queuedResponse = "";
+            this.createPerfectImpact(this.active.subject);
+            this.redrawResponsePrompt();
+        },
+
+        queueResponse(key) {
+            if (
+                this.active &&
+                this.active.phase === "response" &&
+                ["W", "E", "R"].includes(key)
+            ) {
+                this.queuedResponse = key;
+                return true;
+            }
+            return false;
+        },
+
+        resolve(timing, response = "") {
             if (!this.active) {
                 return;
             }
@@ -269,23 +341,17 @@
             this.result = {
                 action: this.active.action,
                 target: this.active.target,
-                timing
+                timing,
+                response
             };
-            if (timing === "perfect" && parrySound) {
-                AudioManager.playSe({
-                    name: parrySound,
-                    volume: soundVolume,
-                    pitch: 100,
-                    pan: 0
-                });
-                $gameScreen.startFlash([255, 255, 255, 150], 8);
-            } else if (timing === "early") {
+            if (timing === "early") {
                 $gameScreen.startFlash([255, 190, 40, 80], 8);
-            } else {
+            } else if (timing === "late") {
                 SoundManager.playBuzzer();
                 $gameScreen.startFlash([255, 30, 30, 80], 8);
             }
             this.active = null;
+            this.queuedResponse = "";
             this.destroyVisuals();
             this.endCinematicFocus();
         },
@@ -351,8 +417,30 @@
             };
             const focusX = subject.screenX();
             const focusY = subject.screenY() - 48;
+            this.focusCamera = { x: focusX, y: focusY };
             $gameScreen.startZoom(focusX, focusY, focusZoom, zoomInFrames);
             $gameScreen.startTint([-24, -24, -12, 0], zoomInFrames);
+        },
+
+        updateResponseCamera() {
+            if (
+                !$gameScreen ||
+                !this.active ||
+                this.active.phase !== "response" ||
+                !this.focusCamera
+            ) {
+                return;
+            }
+
+            const time = this.active.elapsed;
+            const driftX = Math.sin(time * 0.025) * 4;
+            const driftY = Math.cos(time * 0.021) * 3;
+            const breathingZoom = Math.sin(time * 0.032) * 0.008;
+            $gameScreen.setZoom(
+                this.focusCamera.x + driftX,
+                this.focusCamera.y + driftY,
+                focusZoom + breathingZoom
+            );
         },
 
         endCinematicFocus() {
@@ -369,6 +457,104 @@
             );
             $gameScreen.startTint(camera.tone, zoomOutFrames);
             this.previousCamera = null;
+            this.focusCamera = null;
+        },
+
+        createPerfectImpact(subject) {
+            this.destroyImpactEffect();
+            const scene = SceneManager._scene;
+            if (!scene || !subject) {
+                return;
+            }
+
+            const offset = this.pointOffset(subject);
+            const container = new Sprite();
+            container.x = subject.screenX() + offset.x;
+            container.y = subject.screenY() + offset.y;
+            scene.addChild(container);
+
+            const glowBitmap = new Bitmap(112, 112);
+            glowBitmap.drawCircle(56, 56, 48, "rgba(255, 220, 105, 0.22)");
+            glowBitmap.drawCircle(56, 56, 28, "rgba(255, 248, 210, 0.65)");
+            glowBitmap.drawCircle(56, 56, 12, "#ffffff");
+            const glow = new Sprite(glowBitmap);
+            glow.anchor.set(0.5, 0.5);
+            glow.scale.set(0.55, 0.55);
+            glow._wamaiImpactGlow = true;
+            container.addChild(glow);
+
+            const particles = [];
+            const sparkCount = 16;
+            for (let index = 0; index < sparkCount; index++) {
+                const angle =
+                    (Math.PI * 2 * index) / sparkCount +
+                    (Math.random() - 0.5) * 0.22;
+                const length = 18 + Math.random() * 26;
+                const sparkBitmap = new Bitmap(Math.ceil(length), 5);
+                sparkBitmap.gradientFillRect(
+                    0,
+                    0,
+                    Math.ceil(length),
+                    5,
+                    "#ffffff",
+                    "#f4b83f"
+                );
+                const spark = new Sprite(sparkBitmap);
+                const speed = 3.5 + Math.random() * 4.5;
+                spark.anchor.set(0.12, 0.5);
+                spark.rotation = angle;
+                spark._wamaiVx = Math.cos(angle) * speed;
+                spark._wamaiVy = Math.sin(angle) * speed;
+                spark._wamaiSpin = (Math.random() - 0.5) * 0.035;
+                container.addChild(spark);
+                particles.push(spark);
+            }
+
+            this.impactContainer = container;
+            this.impactParticles = particles;
+            this.impactElapsed = 0;
+        },
+
+        updateImpactEffect() {
+            if (!this.impactContainer) {
+                return;
+            }
+
+            this.impactElapsed++;
+            const duration = 16;
+            const life = Math.max(0, 1 - this.impactElapsed / duration);
+            const glow = this.impactContainer.children.find(
+                child => child._wamaiImpactGlow
+            );
+            if (glow) {
+                const scale = 0.55 + this.impactElapsed * 0.075;
+                glow.scale.set(scale, scale);
+                glow.opacity = Math.round(255 * life);
+            }
+            for (const spark of this.impactParticles) {
+                spark.x += spark._wamaiVx;
+                spark.y += spark._wamaiVy;
+                spark._wamaiVx *= 0.92;
+                spark._wamaiVy *= 0.92;
+                spark.rotation += spark._wamaiSpin;
+                spark.opacity = Math.round(255 * life);
+                spark.scale.x = 0.65 + life * 0.55;
+            }
+            if (this.impactElapsed >= duration) {
+                this.destroyImpactEffect();
+            }
+        },
+
+        destroyImpactEffect() {
+            if (this.impactContainer && this.impactContainer.parent) {
+                this.impactContainer.parent.removeChild(this.impactContainer);
+            }
+            if (this.impactContainer) {
+                this.impactContainer.destroy({ children: true });
+            }
+            this.impactContainer = null;
+            this.impactParticles = [];
+            this.impactElapsed = 0;
         },
 
         createVisuals(subject) {
@@ -392,8 +578,8 @@
             }
 
             if (scene) {
-                const width = 420;
-                const height = 72;
+                const width = promptWidth;
+                const height = promptHeight;
                 const bitmap = new Bitmap(width, height);
                 bitmap.fillRect(0, 0, width, height, "rgba(0, 0, 0, 0.78)");
                 bitmap.fillRect(0, 0, width, 3, "#ff3030");
@@ -404,7 +590,7 @@
                 bitmap.textColor = "#ffffff";
                 bitmap.outlineColor = "rgba(140, 0, 0, 1)";
                 bitmap.outlineWidth = 5;
-                bitmap.drawText(promptText, 0, 4, width, 54, "center");
+                bitmap.drawText(promptText, 0, 10, width, 54, "center");
 
                 const prompt = new Sprite(bitmap);
                 prompt.anchor.set(0.5, 0);
@@ -431,8 +617,8 @@
                 return;
             }
 
-            const width = 420;
-            const height = 72;
+            const width = promptWidth;
+            const height = promptHeight;
             const styles = {
                 early: {
                     color: "#e5a323",
@@ -459,19 +645,81 @@
             bitmap.textColor = "#ffffff";
             bitmap.outlineColor = "rgba(90, 0, 0, 1)";
             bitmap.outlineWidth = 5;
-            bitmap.drawText(style.text, 0, 4, width, 54, "center");
+            bitmap.drawText(style.text, 0, 10, width, 54, "center");
             if (this.barSprite) {
                 this.barSprite.tint = Number(`0x${style.color.slice(1)}`);
             }
             this.displayedTiming = timing;
         },
 
+        redrawResponsePrompt() {
+            if (!this.promptSprite) {
+                return;
+            }
+
+            const bitmap = this.promptSprite.bitmap;
+            bitmap.clear();
+            bitmap.fillRect(
+                0,
+                0,
+                promptWidth,
+                promptHeight,
+                "rgba(0, 0, 0, 0.86)"
+            );
+            bitmap.fillRect(0, 0, promptWidth, 3, "#f7d154");
+            bitmap.fillRect(
+                0,
+                promptHeight - 3,
+                promptWidth,
+                3,
+                "#f7d154"
+            );
+            bitmap.fontFace = $gameSystem.mainFontFace();
+            bitmap.fontBold = true;
+            bitmap.outlineColor = "rgba(0, 0, 0, 1)";
+            bitmap.outlineWidth = 4;
+            bitmap.textColor = "#f7d154";
+            bitmap.fontSize = 24;
+            bitmap.drawText(
+                "PARRY PERFECTO — ELIGE RESPUESTA",
+                0,
+                3,
+                promptWidth,
+                36,
+                "center"
+            );
+            bitmap.textColor = "#ffffff";
+            bitmap.fontSize = 21;
+            bitmap.drawText(
+                "W: REPRESALIA   E: DESVÍO   R: CONCENTRACIÓN",
+                0,
+                38,
+                promptWidth,
+                36,
+                "center"
+            );
+            if (this.barSprite) {
+                this.barSprite.tint = 0xf7d154;
+                this.barSprite.scale.x = 1;
+            }
+            this.displayedTiming = "response";
+        },
+
         updateVisuals() {
+            const choosingResponse = this.active.phase === "response";
             const progress = this.active.elapsed / windowFrames;
             const pulse = (Math.sin(this.active.elapsed * 0.35) + 1) / 2;
-            const timing = this.currentTiming();
-            if (timing !== this.displayedTiming) {
-                this.redrawPrompt(timing);
+            this.updateImpactEffect();
+            if (choosingResponse) {
+                this.updateResponseCamera();
+            }
+            if (!choosingResponse) {
+                const timing = this.currentTiming();
+                if (timing !== this.displayedTiming) {
+                    this.redrawPrompt(timing);
+                }
+            } else if (this.displayedTiming !== "response") {
+                this.redrawResponsePrompt();
             }
             if (this.markerSprite) {
                 const scale = 0.82 + pulse * 0.28;
@@ -483,7 +731,12 @@
                 this.promptSprite.scale.y = 1 + pulse * 0.012;
             }
             if (this.barSprite) {
-                this.barSprite.scale.x = Math.max(0, 1 - progress);
+                this.barSprite.scale.x = choosingResponse
+                    ? 1
+                    : Math.max(0, 1 - progress);
+                this.barSprite.opacity = choosingResponse
+                    ? 185 + Math.round(pulse * 70)
+                    : 255;
             }
         },
 
@@ -500,16 +753,33 @@
             this.promptSprite = null;
             this.barSprite = null;
             this.displayedTiming = "";
+            this.destroyImpactEffect();
         },
 
         clear() {
             this.active = null;
             this.result = null;
             this.damageModifier = null;
+            this.queuedResponse = "";
             this.destroyVisuals();
             this.endCinematicFocus();
         }
     };
+
+    document.addEventListener(
+        "keydown",
+        event => {
+            if (event.repeat) {
+                return;
+            }
+            const key = String(event.key || "").toUpperCase();
+            if (Parry.queueResponse(key)) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            }
+        },
+        true
+    );
 
     const _BattleManager_startAction = BattleManager.startAction;
     BattleManager.startAction = function() {
@@ -533,14 +803,44 @@
         this._targets.shift();
         if (parryResult.timing === "perfect") {
             this._logWindow.push("pushBaseLine");
-            this._logWindow.push(
-                "addText",
-                `${target.name()} ejecuta ¡PARRY!`
-            );
-            if (counterAttack) {
-                this.invokeCounterAttack(this._subject, target);
+            if (parryResult.response === "E") {
+                const redirectTarget =
+                    $gameTroop
+                        .aliveMembers()
+                        .find(enemy => enemy !== this._subject) || this._subject;
+                this._logWindow.push(
+                    "addText",
+                    `${target.name()} desvía el ataque hacia ${redirectTarget.name()}.`
+                );
+                this._logWindow.push(
+                    "showAnimation",
+                    this._subject,
+                    [redirectTarget],
+                    this._action.item().animationId
+                );
+                this._action.apply(redirectTarget);
+                this._logWindow.displayActionResults(
+                    this._subject,
+                    redirectTarget
+                );
+                this._subject.setLastTarget(redirectTarget);
+            } else if (parryResult.response === "R") {
+                target.gainTp(concentrationTp);
+                this._logWindow.push(
+                    "addText",
+                    `${target.name()} se concentra y obtiene ${concentrationTp} PT.`
+                );
+                this._subject.setLastTarget(target);
+            } else {
+                this._logWindow.push(
+                    "addText",
+                    `${target.name()} responde con una represalia.`
+                );
+                if (counterAttack) {
+                    this.invokeCounterAttack(this._subject, target);
+                }
+                this._subject.setLastTarget(target);
             }
-            this._subject.setLastTarget(target);
             this._logWindow.push("popBaseLine");
         } else if (parryResult.timing === "early") {
             this._logWindow.push("pushBaseLine");

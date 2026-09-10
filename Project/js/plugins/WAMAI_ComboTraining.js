@@ -1,6 +1,6 @@
 /*:
  * @target MZ
- * @plugindesc v1.0 Batalla de entrenamiento para practicar combos y medir daño.
+ * @plugindesc v1.1 Entrenamiento para una paleta de combos y medición de daño.
  * @author Equipo Wamai
  *
  * @command IniciarEntrenamiento
@@ -29,6 +29,12 @@
  * @desc Se enseña solo durante el entrenamiento y se retira al salir.
  * @type skill
  * @default 230
+ *
+ * @param SkillsComboDemo
+ * @text Habilidades de la paleta
+ * @desc IDs separados por comas que se prestan y no consumen PM/PT en la demo.
+ * @type string
+ * @default 230,172,174,22,206
  *
  * @param SkillDano
  * @text Habilidad que causa el daño
@@ -63,11 +69,33 @@
     const defaultTroopId = Math.max(1, Number(parameters.TroopId || 1));
     const healEnemies = parameters.CurarEnemigos !== "false";
     const comboSkillId = Math.max(1, Number(parameters.SkillCombo || 230));
+    const demoComboSkillIds = [
+        ...new Set(
+            String(parameters.SkillsComboDemo || "230,172,174,22,206")
+                .split(",")
+                .map(value => Number(value.trim()))
+                .filter(value => value > 0)
+                .concat(comboSkillId)
+        )
+    ];
     const damageSkillId = Math.max(1, Number(parameters.SkillDano || 231));
     const trainingDamageFormula = String(
         parameters.FormulaEntrenamiento ||
             "Math.max(1, a.atk * 4 - b.def * 2)"
     );
+
+    function skillsForTraining() {
+        const catalogIds = Array.isArray(window.WAMAIComboCatalog)
+            ? window.WAMAIComboCatalog.map(item => Number(item.skillId))
+            : [];
+        return [
+            ...new Set(
+                demoComboSkillIds
+                    .concat(catalogIds)
+                    .filter(skillId => skillId > 0 && $dataSkills[skillId])
+            )
+        ];
+    }
 
     const Training = {
         active: false,
@@ -79,9 +107,11 @@
         lastCombo: "—",
         comboExpected: "WER",
         comboProgress: "",
+        comboMaxLength: 3,
         comboStatus: "Selecciona Atacar para elegir objetivo",
         revision: 0,
         temporaryLearners: [],
+        originalSkillCosts: [],
         originalDamageFormula: null,
 
         start() {
@@ -94,12 +124,32 @@
             this.lastCombo = "—";
             this.comboExpected = "WER";
             this.comboProgress = "";
+            this.comboMaxLength = 3;
             this.comboStatus = "Selecciona Atacar para elegir objetivo";
             this.temporaryLearners = [];
+            this.originalSkillCosts = [];
+            const trainingSkillIds = skillsForTraining();
             for (const actor of $gameParty.members()) {
-                if (!actor.hasSkill(comboSkillId)) {
-                    actor.learnSkill(comboSkillId);
-                    this.temporaryLearners.push(actor.actorId());
+                for (const skillId of trainingSkillIds) {
+                    if ($dataSkills[skillId] && !actor.hasSkill(skillId)) {
+                        actor.learnSkill(skillId);
+                        this.temporaryLearners.push({
+                            actorId: actor.actorId(),
+                            skillId
+                        });
+                    }
+                }
+            }
+            for (const skillId of trainingSkillIds) {
+                const skill = $dataSkills[skillId];
+                if (skill) {
+                    this.originalSkillCosts.push({
+                        skillId,
+                        mpCost: skill.mpCost,
+                        tpCost: skill.tpCost
+                    });
+                    skill.mpCost = 0;
+                    skill.tpCost = 0;
                 }
             }
             const damageSkill = $dataSkills[damageSkillId];
@@ -117,13 +167,21 @@
         },
 
         stop() {
-            for (const actorId of this.temporaryLearners) {
-                const actor = $gameActors.actor(actorId);
+            for (const record of this.temporaryLearners) {
+                const actor = $gameActors.actor(record.actorId);
                 if (actor) {
-                    actor.forgetSkill(comboSkillId);
+                    actor.forgetSkill(record.skillId);
                 }
             }
             this.temporaryLearners = [];
+            for (const record of this.originalSkillCosts) {
+                const skill = $dataSkills[record.skillId];
+                if (skill) {
+                    skill.mpCost = record.mpCost;
+                    skill.tpCost = record.tpCost;
+                }
+            }
+            this.originalSkillCosts = [];
             if (this.originalDamageFormula !== null) {
                 const damageSkill = $dataSkills[damageSkillId];
                 if (damageSkill && damageSkill.damage) {
@@ -169,7 +227,9 @@
             if (this.active) {
                 this.comboExpected = detail.expectedCombo || "WER";
                 this.comboProgress = "";
-                this.comboStatus = "Pulsa W para comenzar";
+                this.comboMaxLength = Number(detail.maxLength || 3);
+                this.comboStatus =
+                    detail.message || "Introduce una combinación";
                 this.revision++;
             }
         },
@@ -178,12 +238,12 @@
             if (this.active) {
                 this.comboExpected = detail.expectedCombo || "WER";
                 this.comboProgress = detail.currentCombo || "";
-                const nextKey = this.comboExpected[this.comboProgress.length];
+                this.comboMaxLength = Number(detail.maxLength || 3);
                 this.comboStatus = detail.completed
                     ? "¡Combo completado!"
-                    : nextKey
-                      ? `Siguiente tecla: ${nextKey}`
-                      : "Reiniciando secuencia";
+                    : this.comboProgress
+                      ? `Entrada actual: ${this.comboProgress}`
+                      : "Secuencia reiniciada";
                 this.revision++;
             }
         },
@@ -205,10 +265,11 @@
         },
 
         formattedSequence() {
-            return [...this.comboExpected]
-                .map((key, index) =>
-                    index < this.comboProgress.length ? `[${key}]` : `[ ]`
-                )
+            return Array.from({ length: this.comboMaxLength }, (_, index) =>
+                this.comboProgress[index]
+                    ? `[${this.comboProgress[index]}]`
+                    : `[ ]`
+            )
                 .join(" ");
         }
     };

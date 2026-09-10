@@ -10,5 +10,7 @@ var $plugins =
 {"name":"WAMAI_ActiveParry","status":true,"description":"v1.0 Parry activo con aviso visual, entrada cronometrada y contraataque.","parameters":{"VentanaFrames":"60","TextoPrompt":"¡PARRY!  [Z]","SonidoParry":"Parry","VolumenSonido":"90","Contraatacar":"true","PuntoX":"0","PuntoY":"-100"}},
 {"name":"WAMAI_ComboInput","status":true,"description":"v1.0 Ejecuta una habilidad al introducir un combo durante la selección de acciones.","parameters":{"Combo":"WER","SkillId":"230","TimeoutMs":"1500"}},
 {"name":"WAMAI_ComboTraining","status":true,"description":"v1.0 Batalla de entrenamiento para practicar combos y medir daño.","parameters":{"TroopId":"1","CurarEnemigos":"true","SkillCombo":"230","SkillDano":"231","FormulaEntrenamiento":"Math.max(1, a.atk * 4 - b.def * 2)"}},
-{"name":"WAMAI_WASDMovement","status":true,"description":"v1.0 Permite mover al jugador con WASD sin interferir con los combos de batalla.","parameters":{}}
+{"name":"WAMAI_WASDMovement","status":true,"description":"v1.0 Permite mover al jugador con WASD sin interferir con los combos de batalla.","parameters":{}},
+{"name":"WAMAI_TurnOrder","status":true,"description":"v1.0 Orden determinista por AGI con barra visual y reordenamiento dinámico.","parameters":{"MaxParticipantes":"8","MostrarAgilidad":"true","ColorAliado":"#2878b8","ColorEnemigo":"#a33b3b"}},
+{"name":"WAMAI_DualForm","status":true,"description":"v1.1 Cambio Usami/Michi con acción, habilidades y gráficos propios.","parameters":{"ActorId":"2","NombreForma1":"Usami","NombreForma2":"Michi","ReiniciarBatalla":"true","HabilidadesForma1":"","HabilidadesForma2":"","RostroMichi":"Actor3","IndiceRostroMichi":"1","PersonajeMichi":"","IndicePersonajeMichi":"0","BattlerMichi":"Actor2_7","AnimacionCambio":"0"}}
 ];
