@@ -1,6 +1,6 @@
 /*:
  * @target MZ
- * @plugindesc v1.1 Muestra etiquetas animadas sobre eventos de prueba.
+ * @plugindesc v1.2 Etiquetas animadas visibles en playtest y betas del sandbox.
  * @author Equipo Wamai
  *
  * @param SoloPlaytest
@@ -9,6 +9,21 @@
  * @on Sí
  * @off No
  * @default true
+ *
+ * @param MostrarEnBeta
+ * @text Mostrar en beta del sandbox
+ * @desc Mantiene las etiquetas en el mapa sandbox aunque el juego esté desplegado.
+ * @type boolean
+ * @on Sí
+ * @off No
+ * @default true
+ *
+ * @param MapaSandbox
+ * @text Mapa sandbox
+ * @desc ID del mapa donde las etiquetas permanecen visibles en una beta.
+ * @type number
+ * @min 1
+ * @default 18
  *
  * @param TamanoFuente
  * @text Tamaño de fuente
@@ -58,8 +73,9 @@
  *
  * La etiqueta sigue al evento y flota suavemente. No cambia la prioridad ni
  * el desencadenante del evento.
- * Por defecto solo aparece al ejecutar el juego desde el editor (playtest),
- * para que las ayudas del mapa de pruebas no salgan en la versión publicada.
+ * Las etiquetas aparecen durante playtest y también en el mapa sandbox de una
+ * beta desplegada. Permanecen ocultas en los demás mapas publicados mientras
+ * "Solo durante playtest" esté activado.
  */
 
 (() => {
@@ -68,6 +84,8 @@
     const pluginName = "WAMAI_SandboxLabels";
     const parameters = PluginManager.parameters(pluginName);
     const onlyPlaytest = parameters.SoloPlaytest !== "false";
+    const showInBeta = parameters.MostrarEnBeta !== "false";
+    const sandboxMapId = Math.max(1, Number(parameters.MapaSandbox || 18));
     const fontSize = Math.max(10, Number(parameters.TamanoFuente || 18));
     const offsetY = Number(parameters.DesplazamientoY || -52);
     const floatAmplitude = Math.max(
@@ -85,7 +103,10 @@
     const labelPattern = /<Etiqueta\s*:\s*([^>]+)>/i;
 
     function labelsAreEnabled() {
-        return !onlyPlaytest || Utils.isOptionValid("test");
+        const isPlaytest = Utils.isOptionValid("test");
+        const isPublishedSandbox =
+            showInBeta && $gameMap && $gameMap.mapId() === sandboxMapId;
+        return !onlyPlaytest || isPlaytest || isPublishedSandbox;
     }
 
     function eventLabel(character) {
