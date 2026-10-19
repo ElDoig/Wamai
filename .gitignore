@@ -6,3 +6,6 @@ Project/save/
 Thumbs.db
 desktop.ini
 *.log
+
+# Publicación web: artefactos, informes y pruebas locales generados
+/.pages-build/
